@@ -1,0 +1,30 @@
+{
+  "name": "spotiwho",
+  "version": "1.0.0",
+  "description": "SpotiWho - Guess which friend liked the song",
+  "private": true,
+  "scripts": {
+    "dev:server": "nodemon src/index.js",
+    "dev:client": "cd client && npm run dev",
+    "dev": "concurrently -n SERVER,CLIENT -c blue,green \"npm run dev:server\" \"npm run dev:client\"",
+    "build": "cd client && npm install && npm run build",
+    "start": "NODE_ENV=production node src/index.js",
+    "postinstall": "cd client && npm install"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "axios": "^1.13.6",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.6",
+    "dotenv": "^17.3.1",
+    "express": "^5.2.1",
+    "express-session": "^1.19.0",
+    "socket.io": "^4.8.3"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "nodemon": "^3.1.14"
+  }
+}
