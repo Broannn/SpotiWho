@@ -16,7 +16,6 @@ function shuffle(a) {
   return a;
 }
 
-// Stable ID based on user info — never changes on reconnect
 function stableId(user) {
   return `player_${user.name}_${(user.image || "noimg").slice(-10)}`;
 }
@@ -25,11 +24,14 @@ function safe(room) {
   return {
     code: room.code,
     host: room.host,
+    mode: room.mode,
     players: room.players.map((p) => ({
       id: p.pid,
       name: p.name,
       image: p.image,
       score: p.score,
+      playlistUrl: p.playlistUrl || null,
+      tracksLoaded: (p.tracks && p.tracks.length > 0) || false,
     })),
     state: room.state,
     settings: room.settings,
@@ -45,12 +47,13 @@ function setupGameSocket(io) {
     console.log(`🔌 ${socket.id} connected`);
 
     // ─── Create room ───
-    socket.on("create-room", ({ user }) => {
+    socket.on("create-room", ({ user, mode }) => {
       const c = generateCode();
       const pid = stableId(user);
       const room = {
         code: c,
         host: pid,
+        mode: mode || "likes",  // "likes" or "playlist"
         players: [
           {
             socketId: socket.id,
@@ -59,6 +62,7 @@ function setupGameSocket(io) {
             image: user.image,
             score: 0,
             tracks: [],
+            playlistUrl: null,
           },
         ],
         state: "lobby",
@@ -68,11 +72,12 @@ function setupGameSocket(io) {
         currentTrack: null,
         votes: new Map(),
         roundTimer: null,
+        roundStartTime: null,
       };
       rooms.set(c, room);
       socket.join(c);
       socket.emit("room-created", { code: c, room: safe(room) });
-      console.log(`🏠 Room ${c} created by ${user.name} (${pid})`);
+      console.log(`🏠 Room ${c} created by ${user.name} (mode: ${room.mode})`);
     });
 
     // ─── Join room ───
@@ -85,7 +90,6 @@ function setupGameSocket(io) {
       const existing = room.players.find((p) => p.pid === pid);
 
       if (existing) {
-        // Reconnection — only update socket id
         existing.socketId = socket.id;
         socket.join(c);
         socket.emit("room-joined", { code: c, room: safe(room) });
@@ -122,7 +126,6 @@ function setupGameSocket(io) {
         return;
       }
 
-      // New player
       if (room.state !== "lobby")
         return socket.emit("error-msg", { message: "Game in progress" });
       if (room.players.length >= 8)
@@ -135,11 +138,76 @@ function setupGameSocket(io) {
         image: user.image,
         score: 0,
         tracks: [],
+        playlistUrl: null,
       });
       socket.join(c);
       io.to(c).emit("room-updated", safe(room));
       socket.emit("room-joined", { code: c, room: safe(room) });
       console.log(`👋 ${user.name} joined ${c} (${pid})`);
+    });
+
+    // ─── Add playlist player (mode: playlist) ───
+    // Host adds a "virtual" player with a pseudo + playlist URL
+    socket.on("add-playlist-player", ({ code: c, pseudo, playlistUrl }) => {
+      const room = rooms.get(c);
+      if (!room || room.mode !== "playlist") return;
+      const caller = findPlayerBySocket(room, socket.id);
+      if (!caller || caller.pid !== room.host) return;
+      if (room.players.length >= 8)
+        return socket.emit("error-msg", { message: "Room full (max 8)" });
+
+      // Check duplicate pseudo
+      const pid = `playlist_${pseudo.toLowerCase().trim()}`;
+      if (room.players.find((p) => p.pid === pid)) {
+        return socket.emit("error-msg", { message: `"${pseudo}" already exists` });
+      }
+
+      room.players.push({
+        socketId: null,  // No socket — virtual player
+        pid: pid,
+        name: pseudo.trim(),
+        image: null,
+        score: 0,
+        tracks: [],
+        playlistUrl: playlistUrl.trim(),
+      });
+
+      io.to(c).emit("room-updated", safe(room));
+      console.log(`🎵 Playlist player "${pseudo}" added to ${c}`);
+    });
+
+    // ─── Remove playlist player ───
+    socket.on("remove-playlist-player", ({ code: c, pid }) => {
+      const room = rooms.get(c);
+      if (!room || room.mode !== "playlist") return;
+      const caller = findPlayerBySocket(room, socket.id);
+      if (!caller || caller.pid !== room.host) return;
+
+      const idx = room.players.findIndex((p) => p.pid === pid && !p.socketId);
+      if (idx !== -1) {
+        room.players.splice(idx, 1);
+        io.to(c).emit("room-updated", safe(room));
+      }
+    });
+
+    // ─── Submit tracks for a specific player (used in playlist mode) ───
+    socket.on("submit-tracks-for-player", ({ code: c, pid, tracks }) => {
+      const room = rooms.get(c);
+      if (!room) return;
+      const caller = findPlayerBySocket(room, socket.id);
+      if (!caller || caller.pid !== room.host) return;
+
+      const player = room.players.find((p) => p.pid === pid);
+      if (player) {
+        player.tracks = tracks;
+        console.log(`🎵 Loaded ${tracks.length} tracks for "${player.name}"`);
+        io.to(c).emit("player-tracks-ready", {
+          playerId: player.pid,
+          playerName: player.name,
+          count: tracks.length,
+        });
+        io.to(c).emit("room-updated", safe(room));
+      }
     });
 
     // ─── Update settings ───
@@ -152,7 +220,7 @@ function setupGameSocket(io) {
       io.to(c).emit("room-updated", safe(room));
     });
 
-    // ─── Submit tracks ───
+    // ─── Submit tracks (likes mode) ───
     socket.on("submit-tracks", ({ code: c, tracks }) => {
       const room = rooms.get(c);
       if (!room) return;
@@ -180,7 +248,7 @@ function setupGameSocket(io) {
         p.tracks.forEach((t) =>
           all.push({
             ...t,
-            ownerId: p.pid,         // Stable ID as owner
+            ownerId: p.pid,
             ownerName: p.name,
           })
         )
@@ -217,18 +285,15 @@ function setupGameSocket(io) {
 
       const player = findPlayerBySocket(room, socket.id);
       if (!player) return;
-      if (room.votes.has(player.pid)) return;  // Already voted
+      if (room.votes.has(player.pid)) return;
 
       const correct = votedPlayerId === room.currentTrack.ownerId;
-
-      // Time-based scoring: faster = more points
-      // Max 500 pts (instant), min 50 pts (last second), 0 if wrong
       let points = 0;
       if (correct) {
-        const elapsed = (Date.now() - room.roundStartTime) / 1000; // seconds since round start
+        const elapsed = (Date.now() - room.roundStartTime) / 1000;
         const totalTime = room.settings.roundTime;
-        const timeRatio = Math.max(0, 1 - elapsed / totalTime); // 1.0 = instant, 0.0 = time's up
-        points = Math.round(50 + 450 * timeRatio); // 50 to 500
+        const timeRatio = Math.max(0, 1 - elapsed / totalTime);
+        points = Math.round(50 + 450 * timeRatio);
       }
 
       room.votes.set(player.pid, {
@@ -245,7 +310,9 @@ function setupGameSocket(io) {
         correctOwnerId: room.currentTrack.ownerId,
       });
 
-      if (room.votes.size >= room.players.length) {
+      // Count only connected players (with socketId) for vote completion
+      const connectedPlayers = room.players.filter((p) => p.socketId !== null);
+      if (room.votes.size >= connectedPlayers.length) {
         if (room.roundTimer) clearTimeout(room.roundTimer);
         room.roundTimer = setTimeout(() => endRound(io, c), 3000);
       }
@@ -257,7 +324,7 @@ function setupGameSocket(io) {
         const idx = room.players.findIndex((p) => p.socketId === socket.id);
         if (idx !== -1) {
           if (room.state === "playing") {
-            console.log(`⏸️  ${room.players[idx].name} disconnected during game (can reconnect)`);
+            console.log(`⏸️  ${room.players[idx].name} disconnected during game`);
             return;
           }
           const pid = room.players[idx].pid;

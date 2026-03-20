@@ -31,6 +31,35 @@ router.get("/playlists/:id/tracks", auth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: "Failed" }); }
 });
 
+// ─── Fetch tracks from a playlist URL or ID ───
+// Used in playlist mode — host's token fetches any public playlist
+router.get("/playlist-tracks/:playlistId", auth, async (req, res) => {
+  try {
+    let tracks = [];
+    let url = `https://api.spotify.com/v1/playlists/${req.params.playlistId}/tracks?limit=100`;
+    while (url && tracks.length < 300) {
+      const { data } = await axios.get(url, { headers: headers(req.session.accessToken) });
+      tracks.push(...data.items.filter(i => i.track).map(i => ({
+        id: i.track.id,
+        name: i.track.name,
+        artist: i.track.artists.map(a => a.name).join(", "),
+        album: i.track.album.name,
+        image: i.track.album.images?.[0]?.url,
+        previewUrl: i.track.preview_url || null,
+        uri: i.track.uri,
+      })));
+      url = data.next;
+    }
+    res.json(tracks);
+  } catch (e) {
+    console.error("Playlist fetch error:", e.response?.status, e.response?.data?.error);
+    if (e.response?.status === 404) {
+      return res.status(404).json({ error: "Playlist not found. Make sure it's public." });
+    }
+    res.status(500).json({ error: "Failed to fetch playlist" });
+  }
+});
+
 router.get("/liked-tracks", auth, async (req, res) => {
   try {
     let tracks = [], url = "https://api.spotify.com/v1/me/tracks?limit=50";
