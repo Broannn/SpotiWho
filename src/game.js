@@ -220,17 +220,28 @@ function setupGameSocket(io) {
       if (room.votes.has(player.pid)) return;  // Already voted
 
       const correct = votedPlayerId === room.currentTrack.ownerId;
+
+      // Time-based scoring: faster = more points
+      // Max 500 pts (instant), min 50 pts (last second), 0 if wrong
+      let points = 0;
+      if (correct) {
+        const elapsed = (Date.now() - room.roundStartTime) / 1000; // seconds since round start
+        const totalTime = room.settings.roundTime;
+        const timeRatio = Math.max(0, 1 - elapsed / totalTime); // 1.0 = instant, 0.0 = time's up
+        points = Math.round(50 + 450 * timeRatio); // 50 to 500
+      }
+
       room.votes.set(player.pid, {
         votedPlayerId,
         isCorrect: correct,
-        points: correct ? 100 : 0,
+        points: points,
       });
 
-      if (correct) player.score += 100;
+      if (correct) player.score += points;
 
       socket.emit("vote-result", {
         isCorrect: correct,
-        points: correct ? 100 : 0,
+        points: points,
         correctOwnerId: room.currentTrack.ownerId,
       });
 
@@ -272,6 +283,7 @@ function startRound(io, c) {
 
   room.currentTrack = room.tracks[room.currentRound];
   room.votes = new Map();
+  room.roundStartTime = Date.now();
 
   io.to(c).emit("round-start", {
     round: room.currentRound + 1,

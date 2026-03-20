@@ -146,7 +146,7 @@ export default function Game({ user }) {
               </>
             ) : (
               <div style={{ padding: "0.9rem 2rem", borderRadius: "var(--radius)", background: "var(--bg-card)", border: `2px solid ${result.isCorrect ? "var(--green)" : "var(--danger)"}`, fontSize: "1.05rem", fontWeight: 700, marginBottom: "1rem" }}>
-                {result.isCorrect ? "✅ Correct! +100 pts" : "❌ Wrong!"}
+                {result.isCorrect ? `✅ Correct! +${result.points} pts` : "❌ Wrong!"}
               </div>
             )}
 
