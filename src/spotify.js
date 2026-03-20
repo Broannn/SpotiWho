@@ -20,9 +20,10 @@ router.get("/playlists/:id/tracks", auth, async (req, res) => {
     let tracks = [], url = `https://api.spotify.com/v1/playlists/${req.params.id}/tracks?limit=100`;
     while (url && tracks.length < 300) {
       const { data } = await axios.get(url, { headers: headers(req.session.accessToken) });
-      tracks.push(...data.items.filter(i => i.track?.preview_url).map(i => ({
+      tracks.push(...data.items.filter(i => i.track).map(i => ({
         id: i.track.id, name: i.track.name, artist: i.track.artists.map(a => a.name).join(", "),
-        album: i.track.album.name, image: i.track.album.images?.[0]?.url, previewUrl: i.track.preview_url, uri: i.track.uri,
+        album: i.track.album.name, image: i.track.album.images?.[0]?.url,
+        previewUrl: i.track.preview_url || null, uri: i.track.uri,
       })));
       url = data.next;
     }
@@ -35,22 +36,27 @@ router.get("/liked-tracks", auth, async (req, res) => {
     let tracks = [], url = "https://api.spotify.com/v1/me/tracks?limit=50";
     while (url && tracks.length < 200) {
       const { data } = await axios.get(url, { headers: headers(req.session.accessToken) });
-      tracks.push(...data.items.filter(i => i.track?.preview_url).map(i => ({
+      tracks.push(...data.items.filter(i => i.track).map(i => ({
         id: i.track.id, name: i.track.name, artist: i.track.artists.map(a => a.name).join(", "),
-        album: i.track.album.name, image: i.track.album.images?.[0]?.url, previewUrl: i.track.preview_url, uri: i.track.uri,
+        album: i.track.album.name, image: i.track.album.images?.[0]?.url,
+        previewUrl: i.track.preview_url || null, uri: i.track.uri,
       })));
       url = data.next;
     }
     res.json(tracks);
-  } catch (e) { res.status(500).json({ error: "Failed" }); }
+  } catch (e) {
+    console.error("Liked tracks error:", e.response?.data || e.message);
+    res.status(500).json({ error: "Failed" });
+  }
 });
 
 router.get("/top-tracks", auth, async (req, res) => {
   try {
     const { data } = await axios.get("https://api.spotify.com/v1/me/top/tracks?limit=50&time_range=medium_term", { headers: headers(req.session.accessToken) });
-    res.json(data.items.filter(t => t.preview_url).map(t => ({
+    res.json(data.items.map(t => ({
       id: t.id, name: t.name, artist: t.artists.map(a => a.name).join(", "),
-      album: t.album.name, image: t.album.images?.[0]?.url, previewUrl: t.preview_url, uri: t.uri,
+      album: t.album.name, image: t.album.images?.[0]?.url,
+      previewUrl: t.preview_url || null, uri: t.uri,
     })));
   } catch (e) { res.status(500).json({ error: "Failed" }); }
 });
