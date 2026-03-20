@@ -16,6 +16,9 @@ export default function Lobby({ user }) {
   const [tracksLoading, setTracksLoading] = useState(false);
   const [playersReady, setPlayersReady] = useState(new Set());
 
+  // Build the same stable ID as the server
+  const myPid = user ? `player_${user.name}_${(user.image || "noimg").slice(-10)}` : null;
+
   useEffect(() => {
     if (!user) { navigate("/"); return; }
 
@@ -70,7 +73,9 @@ export default function Lobby({ user }) {
   const startGame = () => socketRef.current?.emit("start-game", { code: room.code });
 
   if (!user) return null;
-  const isHost = socketRef.current?.id === room?.host;
+
+  // Compare stable pid instead of socket.id
+  const isHost = myPid === room?.host;
 
   return (
     <div style={{ minHeight: "calc(100vh - 70px)", display: "flex", alignItems: "center", justifyContent: "center", padding: "2rem 1rem" }}>

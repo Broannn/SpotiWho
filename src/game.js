@@ -1,10 +1,10 @@
 const rooms = new Map();
 
-function code() {
+function generateCode() {
   const c = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   let r = "";
   for (let i = 0; i < 4; i++) r += c[Math.floor(Math.random() * c.length)];
-  return rooms.has(r) ? code() : r;
+  return rooms.has(r) ? generateCode() : r;
 }
 
 function shuffle(a) {
@@ -16,12 +16,17 @@ function shuffle(a) {
   return a;
 }
 
+// Stable ID based on user info — never changes on reconnect
+function stableId(user) {
+  return `player_${user.name}_${(user.image || "noimg").slice(-10)}`;
+}
+
 function safe(room) {
   return {
     code: room.code,
     host: room.host,
     players: room.players.map((p) => ({
-      id: p.id,
+      id: p.pid,
       name: p.name,
       image: p.image,
       score: p.score,
@@ -31,19 +36,25 @@ function safe(room) {
   };
 }
 
+function findPlayerBySocket(room, socketId) {
+  return room.players.find((p) => p.socketId === socketId);
+}
+
 function setupGameSocket(io) {
   io.on("connection", (socket) => {
     console.log(`🔌 ${socket.id} connected`);
 
     // ─── Create room ───
     socket.on("create-room", ({ user }) => {
-      const c = code();
+      const c = generateCode();
+      const pid = stableId(user);
       const room = {
         code: c,
-        host: socket.id,
+        host: pid,
         players: [
           {
-            id: socket.id,
+            socketId: socket.id,
+            pid: pid,
             name: user.name,
             image: user.image,
             score: 0,
@@ -61,51 +72,36 @@ function setupGameSocket(io) {
       rooms.set(c, room);
       socket.join(c);
       socket.emit("room-created", { code: c, room: safe(room) });
-      console.log(`🏠 Room ${c} created by ${user.name}`);
+      console.log(`🏠 Room ${c} created by ${user.name} (${pid})`);
     });
 
-    // ─── Join room (also handles reconnection during game) ───
+    // ─── Join room ───
     socket.on("join-room", ({ code: c, user }) => {
       c = c.toUpperCase();
       const room = rooms.get(c);
       if (!room) return socket.emit("error-msg", { message: "Room not found" });
 
-      // Check if this player is already in the room (reconnecting with new socket)
-      const existingPlayer = room.players.find(
-        (p) => p.name === user.name && p.image === user.image
-      );
+      const pid = stableId(user);
+      const existing = room.players.find((p) => p.pid === pid);
 
-      if (existingPlayer) {
-        // Reconnection: update the socket id
-        const oldId = existingPlayer.id;
-        existingPlayer.id = socket.id;
-        if (room.host === oldId) room.host = socket.id;
-
-        // Update ownerId in all game tracks so votes match the new socket id
-        room.tracks.forEach((t) => {
-          if (t.ownerId === oldId) t.ownerId = socket.id;
-        });
-        if (room.currentTrack && room.currentTrack.ownerId === oldId) {
-          room.currentTrack.ownerId = socket.id;
-        }
-
+      if (existing) {
+        // Reconnection — only update socket id
+        existing.socketId = socket.id;
         socket.join(c);
         socket.emit("room-joined", { code: c, room: safe(room) });
         io.to(c).emit("room-updated", safe(room));
         console.log(`🔄 ${user.name} reconnected to ${c}`);
 
-        // If game is in progress, resend game state
         if (room.state === "playing") {
           socket.emit("game-started", {
             totalRounds: room.tracks.length,
             roundTime: room.settings.roundTime,
             players: room.players.map((p) => ({
-              id: p.id,
+              id: p.pid,
               name: p.name,
               image: p.image,
             })),
           });
-          // Resend current round if there is one
           if (room.currentTrack) {
             socket.emit("round-start", {
               round: room.currentRound + 1,
@@ -126,14 +122,15 @@ function setupGameSocket(io) {
         return;
       }
 
-      // New player joining
+      // New player
       if (room.state !== "lobby")
         return socket.emit("error-msg", { message: "Game in progress" });
       if (room.players.length >= 8)
         return socket.emit("error-msg", { message: "Room full" });
 
       room.players.push({
-        id: socket.id,
+        socketId: socket.id,
+        pid: pid,
         name: user.name,
         image: user.image,
         score: 0,
@@ -142,28 +139,30 @@ function setupGameSocket(io) {
       socket.join(c);
       io.to(c).emit("room-updated", safe(room));
       socket.emit("room-joined", { code: c, room: safe(room) });
-      console.log(`👋 ${user.name} joined ${c}`);
+      console.log(`👋 ${user.name} joined ${c} (${pid})`);
     });
 
     // ─── Update settings ───
     socket.on("update-settings", ({ code: c, settings }) => {
       const room = rooms.get(c);
-      if (!room || room.host !== socket.id) return;
+      if (!room) return;
+      const player = findPlayerBySocket(room, socket.id);
+      if (!player || player.pid !== room.host) return;
       room.settings = { ...room.settings, ...settings };
       io.to(c).emit("room-updated", safe(room));
     });
 
-    // ─── Submit player tracks ───
+    // ─── Submit tracks ───
     socket.on("submit-tracks", ({ code: c, tracks }) => {
       const room = rooms.get(c);
       if (!room) return;
-      const p = room.players.find((p) => p.id === socket.id);
-      if (p) {
-        p.tracks = tracks;
-        console.log(`🎵 ${p.name} submitted ${tracks.length} tracks`);
+      const player = findPlayerBySocket(room, socket.id);
+      if (player) {
+        player.tracks = tracks;
+        console.log(`🎵 ${player.name} submitted ${tracks.length} tracks`);
         io.to(c).emit("player-tracks-ready", {
-          playerId: socket.id,
-          playerName: p.name,
+          playerId: player.pid,
+          playerName: player.name,
           count: tracks.length,
         });
       }
@@ -172,12 +171,18 @@ function setupGameSocket(io) {
     // ─── Start game ───
     socket.on("start-game", ({ code: c }) => {
       const room = rooms.get(c);
-      if (!room || room.host !== socket.id) return;
+      if (!room) return;
+      const player = findPlayerBySocket(room, socket.id);
+      if (!player || player.pid !== room.host) return;
 
       let all = [];
       room.players.forEach((p) =>
         p.tracks.forEach((t) =>
-          all.push({ ...t, ownerId: p.id, ownerName: p.name })
+          all.push({
+            ...t,
+            ownerId: p.pid,         // Stable ID as owner
+            ownerName: p.name,
+          })
         )
       );
 
@@ -196,7 +201,7 @@ function setupGameSocket(io) {
         totalRounds: room.tracks.length,
         roundTime: room.settings.roundTime,
         players: room.players.map((p) => ({
-          id: p.id,
+          id: p.pid,
           name: p.name,
           image: p.image,
         })),
@@ -208,18 +213,20 @@ function setupGameSocket(io) {
     // ─── Vote ───
     socket.on("submit-vote", ({ code: c, votedPlayerId }) => {
       const room = rooms.get(c);
-      if (!room || room.state !== "playing" || room.votes.has(socket.id))
-        return;
+      if (!room || room.state !== "playing") return;
+
+      const player = findPlayerBySocket(room, socket.id);
+      if (!player) return;
+      if (room.votes.has(player.pid)) return;  // Already voted
 
       const correct = votedPlayerId === room.currentTrack.ownerId;
-      room.votes.set(socket.id, {
+      room.votes.set(player.pid, {
         votedPlayerId,
         isCorrect: correct,
         points: correct ? 100 : 0,
       });
 
-      const p = room.players.find((p) => p.id === socket.id);
-      if (p && correct) p.score += 100;
+      if (correct) player.score += 100;
 
       socket.emit("vote-result", {
         isCorrect: correct,
@@ -227,7 +234,6 @@ function setupGameSocket(io) {
         correctOwnerId: room.currentTrack.ownerId,
       });
 
-      // When all players voted, wait 3s so they can see their result before round ends
       if (room.votes.size >= room.players.length) {
         if (room.roundTimer) clearTimeout(room.roundTimer);
         room.roundTimer = setTimeout(() => endRound(io, c), 3000);
@@ -237,23 +243,20 @@ function setupGameSocket(io) {
     // ─── Disconnect ───
     socket.on("disconnect", () => {
       rooms.forEach((room, c) => {
-        const idx = room.players.findIndex((p) => p.id === socket.id);
+        const idx = room.players.findIndex((p) => p.socketId === socket.id);
         if (idx !== -1) {
-          // If game is in progress, don't remove — allow reconnection
           if (room.state === "playing") {
-            console.log(
-              `⏸️  ${room.players[idx].name} disconnected during game (can reconnect)`
-            );
+            console.log(`⏸️  ${room.players[idx].name} disconnected during game (can reconnect)`);
             return;
           }
-
+          const pid = room.players[idx].pid;
           room.players.splice(idx, 1);
           if (!room.players.length) {
             if (room.roundTimer) clearTimeout(room.roundTimer);
             rooms.delete(c);
             console.log(`🗑️  Room ${c} deleted (empty)`);
           } else {
-            if (room.host === socket.id) room.host = room.players[0].id;
+            if (room.host === pid) room.host = room.players[0].pid;
             io.to(c).emit("room-updated", safe(room));
           }
         }
@@ -285,10 +288,7 @@ function startRound(io, c) {
     roundTime: room.settings.roundTime,
   });
 
-  room.roundTimer = setTimeout(
-    () => endRound(io, c),
-    room.settings.roundTime * 1000
-  );
+  room.roundTimer = setTimeout(() => endRound(io, c), room.settings.roundTime * 1000);
 }
 
 function endRound(io, c) {
@@ -307,7 +307,7 @@ function endRound(io, c) {
       image: room.currentTrack.image,
     },
     scores: room.players
-      .map((p) => ({ id: p.id, name: p.name, image: p.image, score: p.score }))
+      .map((p) => ({ id: p.pid, name: p.name, image: p.image, score: p.score }))
       .sort((a, b) => b.score - a.score),
   });
 
@@ -322,7 +322,7 @@ function endGame(io, c) {
 
   io.to(c).emit("game-over", {
     scores: room.players
-      .map((p) => ({ id: p.id, name: p.name, image: p.image, score: p.score }))
+      .map((p) => ({ id: p.pid, name: p.name, image: p.image, score: p.score }))
       .sort((a, b) => b.score - a.score),
   });
 
