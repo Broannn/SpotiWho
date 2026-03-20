@@ -38,12 +38,12 @@ export default function App() {
 
   return (
     <>
-      {/* Header - hidden during game */}
       <Header user={user} onLogout={logout} />
       <div style={{ paddingTop: "70px" }}>
         <Routes>
           <Route path="/" element={<Home user={user} />} />
           <Route path="/rules" element={<Rules />} />
+          {/* Lobby is accessible without auth (for playlist mode) */}
           <Route path="/lobby" element={<Lobby user={user} />} />
           <Route path="/lobby/:code" element={<Lobby user={user} />} />
           <Route path="/game/:code" element={<Game user={user} />} />
@@ -70,19 +70,17 @@ function Header({ user, onLogout }) {
       </a>
       <nav style={{ display: "flex", alignItems: "center", gap: "1.5rem" }}>
         <a href="/rules" style={{ color: "var(--text-secondary)", fontSize: "0.9rem" }}>Rules</a>
+        <a href="/lobby" style={{ color: "var(--text-secondary)", fontSize: "0.9rem" }}>Play</a>
         {user && (
-          <>
-            <a href="/lobby" style={{ color: "var(--text-secondary)", fontSize: "0.9rem" }}>Play</a>
-            <div style={{
-              display: "flex", alignItems: "center", gap: "0.5rem",
-              background: "var(--bg-card-solid)", padding: "0.35rem 0.75rem 0.35rem 0.35rem",
-              borderRadius: "999px", border: "1px solid var(--glass-border)",
-            }}>
-              {user.image && <img src={user.image} alt="" style={{ width: 26, height: 26, borderRadius: "50%" }} />}
-              <span style={{ fontSize: "0.85rem", color: "var(--text-secondary)" }}>{user.name}</span>
-              <button onClick={onLogout} style={{ background: "none", color: "var(--text-muted)", fontSize: "0.8rem" }}>✕</button>
-            </div>
-          </>
+          <div style={{
+            display: "flex", alignItems: "center", gap: "0.5rem",
+            background: "var(--bg-card-solid)", padding: "0.35rem 0.75rem 0.35rem 0.35rem",
+            borderRadius: "999px", border: "1px solid var(--glass-border)",
+          }}>
+            {user.image && <img src={user.image} alt="" style={{ width: 26, height: 26, borderRadius: "50%" }} />}
+            <span style={{ fontSize: "0.85rem", color: "var(--text-secondary)" }}>{user.name}</span>
+            <button onClick={onLogout} style={{ background: "none", color: "var(--text-muted)", fontSize: "0.8rem" }}>✕</button>
+          </div>
         )}
       </nav>
     </header>

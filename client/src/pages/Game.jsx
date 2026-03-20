@@ -21,8 +21,15 @@ export default function Game({ user }) {
   const [roundTime, setRoundTime] = useState(30);
   const [correctOwner, setCorrectOwner] = useState(null);
 
+  // Get playlist player info from sessionStorage (set by Lobby)
+  const playlistPseudo = sessionStorage.getItem("spotiwho_pseudo");
+  const playlistUrl = sessionStorage.getItem("spotiwho_playlist");
+
+  // If no user AND no playlist pseudo, can't play
+  const canPlay = user || playlistPseudo;
+
   useEffect(() => {
-    if (!user) { navigate("/"); return; }
+    if (!canPlay) { navigate("/"); return; }
 
     const s = io(SOCKET_URL, { withCredentials: true, transports: ["websocket", "polling"] });
     socketRef.current = s;
@@ -68,10 +75,15 @@ export default function Game({ user }) {
       clearInterval(timerRef.current);
     });
 
-    s.emit("join-room", { code, user });
+    // Rejoin room — use the appropriate method
+    if (user) {
+      s.emit("join-room", { code, user });
+    } else if (playlistPseudo && playlistUrl) {
+      s.emit("join-room-playlist", { code, pseudo: playlistPseudo, playlistUrl });
+    }
 
     return () => { s.disconnect(); clearInterval(timerRef.current); };
-  }, [user, code]);
+  }, [canPlay, code]);
 
   const vote = (pid) => {
     if (result) return;
@@ -81,7 +93,6 @@ export default function Game({ user }) {
   const pct = roundTime > 0 ? (timeLeft / roundTime) * 100 : 0;
   const tColor = timeLeft <= 5 ? "var(--danger)" : timeLeft <= 10 ? "var(--warning)" : "var(--green)";
 
-  // Spotify Embed URL
   const embedUrl = track?.id ? `https://open.spotify.com/embed/track/${track.id}?utm_source=generator&theme=0` : null;
 
   return (
@@ -112,15 +123,9 @@ export default function Game({ user }) {
             {/* Spotify Embed Player */}
             {embedUrl && (
               <div style={{ width: "100%", marginBottom: "1.5rem", borderRadius: "var(--radius)", overflow: "hidden" }}>
-                <iframe
-                  src={embedUrl}
-                  width="100%"
-                  height="152"
-                  frameBorder="0"
+                <iframe src={embedUrl} width="100%" height="152" frameBorder="0"
                   allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture"
-                  loading="lazy"
-                  style={{ borderRadius: "12px" }}
-                />
+                  loading="lazy" style={{ borderRadius: "12px" }} />
               </div>
             )}
 

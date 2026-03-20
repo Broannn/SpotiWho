@@ -53,7 +53,7 @@ function setupGameSocket(io) {
       const room = {
         code: c,
         host: pid,
-        mode: mode || "likes",  // "likes" or "playlist"
+        mode: mode || "likes",
         players: [
           {
             socketId: socket.id,
@@ -77,10 +77,10 @@ function setupGameSocket(io) {
       rooms.set(c, room);
       socket.join(c);
       socket.emit("room-created", { code: c, room: safe(room) });
-      console.log(`🏠 Room ${c} created by ${user.name} (mode: ${room.mode})`);
+      console.log(`🏠 Room ${c} created (mode: ${room.mode}) by ${user.name}`);
     });
 
-    // ─── Join room ───
+    // ─── Join room (auth users) ───
     socket.on("join-room", ({ code: c, user }) => {
       c = c.toUpperCase();
       const room = rooms.get(c);
@@ -94,29 +94,20 @@ function setupGameSocket(io) {
         socket.join(c);
         socket.emit("room-joined", { code: c, room: safe(room) });
         io.to(c).emit("room-updated", safe(room));
-        console.log(`🔄 ${user.name} reconnected to ${c}`);
 
         if (room.state === "playing") {
           socket.emit("game-started", {
             totalRounds: room.tracks.length,
             roundTime: room.settings.roundTime,
-            players: room.players.map((p) => ({
-              id: p.pid,
-              name: p.name,
-              image: p.image,
-            })),
+            players: room.players.map((p) => ({ id: p.pid, name: p.name, image: p.image })),
           });
           if (room.currentTrack) {
             socket.emit("round-start", {
-              round: room.currentRound + 1,
-              totalRounds: room.tracks.length,
+              round: room.currentRound + 1, totalRounds: room.tracks.length,
               track: {
-                id: room.currentTrack.id,
-                name: room.currentTrack.name,
-                artist: room.currentTrack.artist,
-                album: room.currentTrack.album,
-                image: room.currentTrack.image,
-                previewUrl: room.currentTrack.previewUrl || null,
+                id: room.currentTrack.id, name: room.currentTrack.name,
+                artist: room.currentTrack.artist, album: room.currentTrack.album,
+                image: room.currentTrack.image, previewUrl: room.currentTrack.previewUrl || null,
                 uri: room.currentTrack.uri,
               },
               roundTime: room.settings.roundTime,
@@ -126,71 +117,86 @@ function setupGameSocket(io) {
         return;
       }
 
-      if (room.state !== "lobby")
-        return socket.emit("error-msg", { message: "Game in progress" });
-      if (room.players.length >= 8)
-        return socket.emit("error-msg", { message: "Room full" });
+      if (room.state !== "lobby") return socket.emit("error-msg", { message: "Game in progress" });
+      if (room.players.length >= 8) return socket.emit("error-msg", { message: "Room full" });
 
       room.players.push({
-        socketId: socket.id,
-        pid: pid,
-        name: user.name,
-        image: user.image,
-        score: 0,
-        tracks: [],
-        playlistUrl: null,
+        socketId: socket.id, pid, name: user.name, image: user.image,
+        score: 0, tracks: [], playlistUrl: null,
       });
       socket.join(c);
       io.to(c).emit("room-updated", safe(room));
       socket.emit("room-joined", { code: c, room: safe(room) });
-      console.log(`👋 ${user.name} joined ${c} (${pid})`);
     });
 
-    // ─── Add playlist player (mode: playlist) ───
-    // Host adds a "virtual" player with a pseudo + playlist URL
-    socket.on("add-playlist-player", ({ code: c, pseudo, playlistUrl }) => {
+    // ─── Join room as playlist player (no auth needed) ───
+    socket.on("join-room-playlist", ({ code: c, pseudo, playlistUrl }) => {
+      c = c.toUpperCase();
       const room = rooms.get(c);
-      if (!room || room.mode !== "playlist") return;
-      const caller = findPlayerBySocket(room, socket.id);
-      if (!caller || caller.pid !== room.host) return;
-      if (room.players.length >= 8)
-        return socket.emit("error-msg", { message: "Room full (max 8)" });
+      if (!room) return socket.emit("error-msg", { message: "Room not found" });
+      if (room.mode !== "playlist") return socket.emit("error-msg", { message: "This room uses Likes mode" });
 
-      // Check duplicate pseudo
       const pid = `playlist_${pseudo.toLowerCase().trim()}`;
-      if (room.players.find((p) => p.pid === pid)) {
-        return socket.emit("error-msg", { message: `"${pseudo}" already exists` });
+      const existing = room.players.find((p) => p.pid === pid);
+
+      if (existing) {
+        existing.socketId = socket.id;
+        existing.playlistUrl = playlistUrl || existing.playlistUrl;
+        socket.join(c);
+        socket.emit("room-joined", { code: c, room: safe(room) });
+        io.to(c).emit("room-updated", safe(room));
+
+        // Resync game state if in progress
+        if (room.state === "playing") {
+          socket.emit("game-started", {
+            totalRounds: room.tracks.length,
+            roundTime: room.settings.roundTime,
+            players: room.players.map((p) => ({ id: p.pid, name: p.name, image: p.image })),
+          });
+          if (room.currentTrack) {
+            socket.emit("round-start", {
+              round: room.currentRound + 1, totalRounds: room.tracks.length,
+              track: {
+                id: room.currentTrack.id, name: room.currentTrack.name,
+                artist: room.currentTrack.artist, album: room.currentTrack.album,
+                image: room.currentTrack.image, previewUrl: room.currentTrack.previewUrl || null,
+                uri: room.currentTrack.uri,
+              },
+              roundTime: room.settings.roundTime,
+            });
+          }
+        }
+        return;
       }
+
+      // New player — only in lobby
+      if (room.state !== "lobby") return socket.emit("error-msg", { message: "Game already started" });
+      if (room.players.length >= 8) return socket.emit("error-msg", { message: "Room full" });
+      if (!pseudo.trim()) return socket.emit("error-msg", { message: "Enter a name" });
+      if (!playlistUrl.trim()) return socket.emit("error-msg", { message: "Enter a playlist link" });
 
       room.players.push({
-        socketId: null,  // No socket — virtual player
-        pid: pid,
-        name: pseudo.trim(),
-        image: null,
-        score: 0,
-        tracks: [],
-        playlistUrl: playlistUrl.trim(),
+        socketId: socket.id, pid, name: pseudo.trim(), image: null,
+        score: 0, tracks: [], playlistUrl: playlistUrl.trim(),
       });
-
+      socket.join(c);
       io.to(c).emit("room-updated", safe(room));
-      console.log(`🎵 Playlist player "${pseudo}" added to ${c}`);
+      socket.emit("room-joined", { code: c, room: safe(room) });
+      console.log(`🎵 "${pseudo}" joined ${c} with playlist`);
     });
 
-    // ─── Remove playlist player ───
-    socket.on("remove-playlist-player", ({ code: c, pid }) => {
+    // ─── Set my playlist (host sets their own playlist URL without creating a new player) ───
+    socket.on("set-my-playlist", ({ code: c, playlistUrl }) => {
       const room = rooms.get(c);
       if (!room || room.mode !== "playlist") return;
-      const caller = findPlayerBySocket(room, socket.id);
-      if (!caller || caller.pid !== room.host) return;
-
-      const idx = room.players.findIndex((p) => p.pid === pid && !p.socketId);
-      if (idx !== -1) {
-        room.players.splice(idx, 1);
-        io.to(c).emit("room-updated", safe(room));
-      }
+      const player = findPlayerBySocket(room, socket.id);
+      if (!player) return;
+      player.playlistUrl = playlistUrl.trim();
+      console.log(`🎵 ${player.name} set their playlist`);
+      io.to(c).emit("room-updated", safe(room));
     });
 
-    // ─── Submit tracks for a specific player (used in playlist mode) ───
+    // ─── Submit tracks for a specific player (host loads playlists) ───
     socket.on("submit-tracks-for-player", ({ code: c, pid, tracks }) => {
       const room = rooms.get(c);
       if (!room) return;
@@ -202,9 +208,7 @@ function setupGameSocket(io) {
         player.tracks = tracks;
         console.log(`🎵 Loaded ${tracks.length} tracks for "${player.name}"`);
         io.to(c).emit("player-tracks-ready", {
-          playerId: player.pid,
-          playerName: player.name,
-          count: tracks.length,
+          playerId: player.pid, playerName: player.name, count: tracks.length,
         });
         io.to(c).emit("room-updated", safe(room));
       }
@@ -227,12 +231,10 @@ function setupGameSocket(io) {
       const player = findPlayerBySocket(room, socket.id);
       if (player) {
         player.tracks = tracks;
-        console.log(`🎵 ${player.name} submitted ${tracks.length} tracks`);
         io.to(c).emit("player-tracks-ready", {
-          playerId: player.pid,
-          playerName: player.name,
-          count: tracks.length,
+          playerId: player.pid, playerName: player.name, count: tracks.length,
         });
+        io.to(c).emit("room-updated", safe(room));
       }
     });
 
@@ -245,13 +247,7 @@ function setupGameSocket(io) {
 
       let all = [];
       room.players.forEach((p) =>
-        p.tracks.forEach((t) =>
-          all.push({
-            ...t,
-            ownerId: p.pid,
-            ownerName: p.name,
-          })
-        )
+        p.tracks.forEach((t) => all.push({ ...t, ownerId: p.pid, ownerName: p.name }))
       );
 
       if (all.length < room.settings.rounds) {
@@ -268,11 +264,7 @@ function setupGameSocket(io) {
       io.to(c).emit("game-started", {
         totalRounds: room.tracks.length,
         roundTime: room.settings.roundTime,
-        players: room.players.map((p) => ({
-          id: p.pid,
-          name: p.name,
-          image: p.image,
-        })),
+        players: room.players.map((p) => ({ id: p.pid, name: p.name, image: p.image })),
       });
 
       setTimeout(() => startRound(io, c), 1500);
@@ -296,23 +288,13 @@ function setupGameSocket(io) {
         points = Math.round(50 + 450 * timeRatio);
       }
 
-      room.votes.set(player.pid, {
-        votedPlayerId,
-        isCorrect: correct,
-        points: points,
-      });
-
+      room.votes.set(player.pid, { votedPlayerId, isCorrect: correct, points });
       if (correct) player.score += points;
 
-      socket.emit("vote-result", {
-        isCorrect: correct,
-        points: points,
-        correctOwnerId: room.currentTrack.ownerId,
-      });
+      socket.emit("vote-result", { isCorrect: correct, points, correctOwnerId: room.currentTrack.ownerId });
 
-      // Count only connected players (with socketId) for vote completion
-      const connectedPlayers = room.players.filter((p) => p.socketId !== null);
-      if (room.votes.size >= connectedPlayers.length) {
+      const activePlayers = room.players.filter((p) => p.socketId);
+      if (room.votes.size >= activePlayers.length) {
         if (room.roundTimer) clearTimeout(room.roundTimer);
         room.roundTimer = setTimeout(() => endRound(io, c), 3000);
       }
@@ -323,23 +305,18 @@ function setupGameSocket(io) {
       rooms.forEach((room, c) => {
         const idx = room.players.findIndex((p) => p.socketId === socket.id);
         if (idx !== -1) {
-          if (room.state === "playing") {
-            console.log(`⏸️  ${room.players[idx].name} disconnected during game`);
-            return;
-          }
+          if (room.state === "playing") return;
           const pid = room.players[idx].pid;
           room.players.splice(idx, 1);
           if (!room.players.length) {
             if (room.roundTimer) clearTimeout(room.roundTimer);
             rooms.delete(c);
-            console.log(`🗑️  Room ${c} deleted (empty)`);
           } else {
             if (room.host === pid) room.host = room.players[0].pid;
             io.to(c).emit("room-updated", safe(room));
           }
         }
       });
-      console.log(`❌ ${socket.id} disconnected`);
     });
   });
 }
@@ -347,26 +324,19 @@ function setupGameSocket(io) {
 function startRound(io, c) {
   const room = rooms.get(c);
   if (!room || room.currentRound >= room.tracks.length) return endGame(io, c);
-
   room.currentTrack = room.tracks[room.currentRound];
   room.votes = new Map();
   room.roundStartTime = Date.now();
-
   io.to(c).emit("round-start", {
-    round: room.currentRound + 1,
-    totalRounds: room.tracks.length,
+    round: room.currentRound + 1, totalRounds: room.tracks.length,
     track: {
-      id: room.currentTrack.id,
-      name: room.currentTrack.name,
-      artist: room.currentTrack.artist,
-      album: room.currentTrack.album,
-      image: room.currentTrack.image,
-      previewUrl: room.currentTrack.previewUrl || null,
+      id: room.currentTrack.id, name: room.currentTrack.name,
+      artist: room.currentTrack.artist, album: room.currentTrack.album,
+      image: room.currentTrack.image, previewUrl: room.currentTrack.previewUrl || null,
       uri: room.currentTrack.uri,
     },
     roundTime: room.settings.roundTime,
   });
-
   room.roundTimer = setTimeout(() => endRound(io, c), room.settings.roundTime * 1000);
 }
 
@@ -374,22 +344,11 @@ function endRound(io, c) {
   const room = rooms.get(c);
   if (!room) return;
   if (room.roundTimer) clearTimeout(room.roundTimer);
-
   io.to(c).emit("round-end", {
-    correctOwner: {
-      id: room.currentTrack.ownerId,
-      name: room.currentTrack.ownerName,
-    },
-    track: {
-      name: room.currentTrack.name,
-      artist: room.currentTrack.artist,
-      image: room.currentTrack.image,
-    },
-    scores: room.players
-      .map((p) => ({ id: p.pid, name: p.name, image: p.image, score: p.score }))
-      .sort((a, b) => b.score - a.score),
+    correctOwner: { id: room.currentTrack.ownerId, name: room.currentTrack.ownerName },
+    track: { name: room.currentTrack.name, artist: room.currentTrack.artist, image: room.currentTrack.image },
+    scores: room.players.map((p) => ({ id: p.pid, name: p.name, image: p.image, score: p.score })).sort((a, b) => b.score - a.score),
   });
-
   room.currentRound++;
   setTimeout(() => startRound(io, c), 8000);
 }
@@ -398,14 +357,9 @@ function endGame(io, c) {
   const room = rooms.get(c);
   if (!room) return;
   room.state = "results";
-
   io.to(c).emit("game-over", {
-    scores: room.players
-      .map((p) => ({ id: p.pid, name: p.name, image: p.image, score: p.score }))
-      .sort((a, b) => b.score - a.score),
+    scores: room.players.map((p) => ({ id: p.pid, name: p.name, image: p.image, score: p.score })).sort((a, b) => b.score - a.score),
   });
-
-  console.log(`🏆 Game over in ${c}`);
 }
 
 module.exports = { setupGameSocket };
