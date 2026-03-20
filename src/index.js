@@ -39,7 +39,7 @@ app.use("/api", apiRoutes);
 if (!isDev) {
   const dist = path.join(__dirname, "../client/dist");
   app.use(express.static(dist));
-  app.get("*", (req, res) => res.sendFile(path.join(dist, "index.html")));
+  app.get("/{*splat}", (req, res) => res.sendFile(path.join(dist, "index.html")));
 }
 
 const io = new Server(server, {
